@@ -1,0 +1,1097 @@
+{
+  "last_node_id": 66,
+  "last_link_id": 112,
+  "nodes": [
+    {
+      "id": 13,
+      "type": "CheckpointLoaderSimple",
+      "pos": [
+        320.8823547363281,
+        225.8454132080078
+      ],
+      "size": [
+        315,
+        98
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            24
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            10
+          ],
+          "slot_index": 1
+        },
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [],
+          "slot_index": 2
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CheckpointLoaderSimple"
+      },
+      "widgets_values": [
+        "cardosAnime_v20.safetensors"
+      ]
+    },
+    {
+      "id": 6,
+      "type": "CLIPTextEncode",
+      "pos": [
+        1455.462158203125,
+        322.16943359375
+      ],
+      "size": [
+        327,
+        108
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            99
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "rock in a river, outdoors, forest, sky, clouds, best quality"
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 3,
+      "type": "CLIPTextEncode",
+      "pos": [
+        1446.5328369140625,
+        507.0426940917969
+      ],
+      "size": [
+        327,
+        108
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            100
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "worst quality, low quality"
+      ],
+      "color": "#322",
+      "bgcolor": "#533"
+    },
+    {
+      "id": 23,
+      "type": "KSampler",
+      "pos": [
+        2746.102783203125,
+        123.32046508789062
+      ],
+      "size": [
+        315,
+        262
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 24
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 108
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 112
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 27
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            7
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KSampler"
+      },
+      "widgets_values": [
+        12345678,
+        "fixed",
+        30,
+        8,
+        "euler",
+        "normal",
+        1
+      ]
+    },
+    {
+      "id": 14,
+      "type": "InvertMask",
+      "pos": [
+        2258.0078125,
+        -186.76577758789062
+      ],
+      "size": [
+        210,
+        26
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 46
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [
+            20
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "InvertMask"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 15,
+      "type": "Reroute",
+      "pos": [
+        2115.783447265625,
+        -213.33934020996094
+      ],
+      "size": [
+        75,
+        26
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "",
+          "type": "*",
+          "link": 53
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "MASK",
+          "links": [
+            46,
+            111
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "showOutputText": false,
+        "horizontal": false
+      }
+    },
+    {
+      "id": 24,
+      "type": "LoadImageMask",
+      "pos": [
+        1701.27734375,
+        -537.9240112304688
+      ],
+      "size": [
+        315,
+        318
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [
+            53
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImageMask"
+      },
+      "widgets_values": [
+        "gradient_left.png",
+        "red",
+        "image"
+      ]
+    },
+    {
+      "id": 10,
+      "type": "VAELoader",
+      "pos": [
+        2610.748291015625,
+        1.1160026788711548
+      ],
+      "size": [
+        315,
+        58
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            8
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAELoader"
+      },
+      "widgets_values": [
+        "vae-ft-mse-840000-ema-pruned.safetensors"
+      ]
+    },
+    {
+      "id": 9,
+      "type": "VAEDecode",
+      "pos": [
+        2980.174560546875,
+        -25.690481185913086
+      ],
+      "size": [
+        210,
+        46
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 7
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            23
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 22,
+      "type": "SaveImage",
+      "pos": [
+        3255.718017578125,
+        -43.360084533691406
+      ],
+      "size": [
+        562,
+        558
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 23
+        }
+      ],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "lorahooksmasking/img"
+      ]
+    },
+    {
+      "id": 18,
+      "type": "CreateHookModelAsLora",
+      "pos": [
+        736.6409912109375,
+        427.2898254394531
+      ],
+      "size": [
+        315,
+        106
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "prev_hooks",
+          "type": "HOOKS",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "HOOKS",
+          "type": "HOOKS",
+          "links": [
+            48
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CreateHookModelAsLora"
+      },
+      "widgets_values": [
+        "1_5\\dreamshaper_8.safetensors",
+        1,
+        1
+      ]
+    },
+    {
+      "id": 2,
+      "type": "CLIPTextEncode",
+      "pos": [
+        1442.150634765625,
+        66.42279052734375
+      ],
+      "size": [
+        327,
+        108
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            14
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "worst quality, low quality"
+      ],
+      "color": "#322",
+      "bgcolor": "#533"
+    },
+    {
+      "id": 12,
+      "type": "CLIPSetLastLayer",
+      "pos": [
+        766.9089965820312,
+        250.52915954589844
+      ],
+      "size": [
+        210,
+        58.683013916015625
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 10
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            9,
+            21
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPSetLastLayer"
+      },
+      "widgets_values": [
+        -2
+      ]
+    },
+    {
+      "id": 16,
+      "type": "PairConditioningSetProperties",
+      "pos": [
+        1909.7257080078125,
+        49.99501037597656
+      ],
+      "size": [
+        315,
+        162
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "positive_NEW",
+          "type": "CONDITIONING",
+          "link": 13
+        },
+        {
+          "name": "negative_NEW",
+          "type": "CONDITIONING",
+          "link": 14
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 111,
+          "shape": 7
+        },
+        {
+          "name": "hooks",
+          "type": "HOOKS",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "timesteps",
+          "type": "TIMESTEPS_RANGE",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "links": [
+            97
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "links": [
+            98
+          ],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PairConditioningSetProperties"
+      },
+      "widgets_values": [
+        1,
+        "default"
+      ]
+    },
+    {
+      "id": 4,
+      "type": "CLIPTextEncode",
+      "pos": [
+        1448.716064453125,
+        -95.83322143554688
+      ],
+      "size": [
+        327,
+        108
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            13
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "rock in a river, outdoors, forest, sky, clouds, best quality"
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 21,
+      "type": "SetClipHooks",
+      "pos": [
+        1149.6304931640625,
+        -47.28285598754883
+      ],
+      "size": [
+        217.4999542236328,
+        102
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 21
+        },
+        {
+          "name": "hooks",
+          "type": "HOOKS",
+          "link": 52,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            1,
+            3
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SetClipHooks"
+      },
+      "widgets_values": [
+        true,
+        false
+      ]
+    },
+    {
+      "id": 11,
+      "type": "SetClipHooks",
+      "pos": [
+        1120.0894775390625,
+        408.7065734863281
+      ],
+      "size": [
+        210,
+        102
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 9
+        },
+        {
+          "name": "hooks",
+          "type": "HOOKS",
+          "link": 48,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            2,
+            4
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SetClipHooks"
+      },
+      "widgets_values": [
+        true,
+        false
+      ]
+    },
+    {
+      "id": 17,
+      "type": "PairConditioningSetPropertiesAndCombine",
+      "pos": [
+        2298.70849609375,
+        188.89825439453125
+      ],
+      "size": [
+        340.20001220703125,
+        202
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 97
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 98
+        },
+        {
+          "name": "positive_NEW",
+          "type": "CONDITIONING",
+          "link": 99
+        },
+        {
+          "name": "negative_NEW",
+          "type": "CONDITIONING",
+          "link": 100
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 20,
+          "shape": 7
+        },
+        {
+          "name": "hooks",
+          "type": "HOOKS",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "timesteps",
+          "type": "TIMESTEPS_RANGE",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "links": [
+            108
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "links": [
+            112
+          ],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PairConditioningSetPropertiesAndCombine"
+      },
+      "widgets_values": [
+        1,
+        "default"
+      ]
+    },
+    {
+      "id": 20,
+      "type": "CreateHookLora",
+      "pos": [
+        759.8099365234375,
+        -28.04927635192871
+      ],
+      "size": [
+        291.2920837402344,
+        106
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "prev_hooks",
+          "type": "HOOKS",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "HOOKS",
+          "type": "HOOKS",
+          "links": [
+            52
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CreateHookLora"
+      },
+      "widgets_values": [
+        "sd1_5\\PixelArtRedmond15V-PixelArt-PIXARFK.safetensors",
+        1.1,
+        1
+      ]
+    },
+    {
+      "id": 5,
+      "type": "EmptyLatentImage",
+      "pos": [
+        2350.917236328125,
+        482.28216552734375
+      ],
+      "size": [
+        315,
+        106
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            27
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "EmptyLatentImage"
+      },
+      "widgets_values": [
+        768,
+        768,
+        1
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      21,
+      0,
+      2,
+      0,
+      "CLIP"
+    ],
+    [
+      2,
+      11,
+      0,
+      3,
+      0,
+      "CLIP"
+    ],
+    [
+      3,
+      21,
+      0,
+      4,
+      0,
+      "CLIP"
+    ],
+    [
+      4,
+      11,
+      0,
+      6,
+      0,
+      "CLIP"
+    ],
+    [
+      7,
+      23,
+      0,
+      9,
+      0,
+      "LATENT"
+    ],
+    [
+      8,
+      10,
+      0,
+      9,
+      1,
+      "VAE"
+    ],
+    [
+      9,
+      12,
+      0,
+      11,
+      0,
+      "CLIP"
+    ],
+    [
+      10,
+      13,
+      1,
+      12,
+      0,
+      "CLIP"
+    ],
+    [
+      13,
+      4,
+      0,
+      16,
+      0,
+      "CONDITIONING"
+    ],
+    [
+      14,
+      2,
+      0,
+      16,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      20,
+      14,
+      0,
+      17,
+      4,
+      "MASK"
+    ],
+    [
+      21,
+      12,
+      0,
+      21,
+      0,
+      "CLIP"
+    ],
+    [
+      23,
+      9,
+      0,
+      22,
+      0,
+      "IMAGE"
+    ],
+    [
+      24,
+      13,
+      0,
+      23,
+      0,
+      "MODEL"
+    ],
+    [
+      27,
+      5,
+      0,
+      23,
+      3,
+      "LATENT"
+    ],
+    [
+      46,
+      15,
+      0,
+      14,
+      0,
+      "MASK"
+    ],
+    [
+      48,
+      18,
+      0,
+      11,
+      1,
+      "HOOKS"
+    ],
+    [
+      52,
+      20,
+      0,
+      21,
+      1,
+      "HOOKS"
+    ],
+    [
+      53,
+      24,
+      0,
+      15,
+      0,
+      "*"
+    ],
+    [
+      97,
+      16,
+      0,
+      17,
+      0,
+      "CONDITIONING"
+    ],
+    [
+      98,
+      16,
+      1,
+      17,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      99,
+      6,
+      0,
+      17,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      100,
+      3,
+      0,
+      17,
+      3,
+      "CONDITIONING"
+    ],
+    [
+      108,
+      17,
+      0,
+      23,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      111,
+      15,
+      0,
+      16,
+      2,
+      "MASK"
+    ],
+    [
+      112,
+      17,
+      1,
+      23,
+      2,
+      "CONDITIONING"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.6830134553650706,
+      "offset": [
+        -255.0334156454202,
+        850.7818226955332
+      ]
+    }
+  },
+  "version": 0.4
+}
