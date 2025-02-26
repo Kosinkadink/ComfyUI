@@ -3,6 +3,7 @@ import torch
 from torch import nn
 from .ldm.modules.attention import CrossAttention
 from inspect import isfunction
+import copy
 import comfy.ops
 ops = comfy.ops.manual_cast
 
@@ -248,12 +249,23 @@ class Gligen(nn.Module):
         self.key_dim = key_dim
         self.max_objs = 30
         self.current_device = torch.device("cpu")
+        self.multigpu_module_lists: dict[torch.device, nn.ModuleList] = {}
+    
+    def get_module_list(self, device=None) -> dict[torch.device, nn.ModuleList]:
+        return self.multigpu_module_lists.get(device, self.module_list)
+
+    def add_device(self, device):
+        if device not in self.multigpu_module_lists:
+            self.multigpu_module_lists[device] = copy.deepcopy(self.module_list).to(device)
+
+    def cleanup(self):
+        self.multigpu_module_lists.clear()
 
     def _set_position(self, boxes, masks, positive_embeddings):
         objs = self.position_net(boxes, masks, positive_embeddings)
         def func(x, extra_options):
             key = extra_options["transformer_index"]
-            module = self.module_list[key]
+            module = self.get_module_list(x.device)[key]
             return module(x, objs.to(device=x.device, dtype=x.dtype))
         return func
 

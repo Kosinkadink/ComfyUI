@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from comfy.model_patcher import ModelPatcher
     from comfy.model_base import BaseModel
     from comfy.controlnet import ControlBase
+    from comfy.gligen import Gligen
 import torch
 from functools import partial
 import collections
@@ -1127,7 +1128,15 @@ def preprocess_multigpu_conds(conds: dict[str, list[dict[str]]], model_options: 
                         prev_device_cnet = prev_cnet.get_instance_for_device(device)
                     device_cnet.set_previous_controlnet(prev_device_cnet)
                 curr_cnet = prev_cnet
-    # TODO: handle gligen
+    # handle gligen
+    for k in conds:
+        for kk in conds[k]:
+            if 'gligen' in kk:
+                gligen = kk['gligen']
+                gligen_model: Gligen = gligen[1]
+                if gligen_model is not None and hasattr(gligen_model.model, 'add_device'):
+                    for device in extra_devices:
+                        gligen_model.model.add_device(device)
 
 
 class CFGGuider:

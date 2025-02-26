@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from comfy.model_patcher import ModelPatcher
     from comfy.model_base import BaseModel
     from comfy.controlnet import ControlBase
+    from comfy.gligen import Gligen
 
 def prepare_mask(noise_mask, shape, device):
     return comfy.utils.reshape_mask(noise_mask, shape).to(device)
@@ -125,8 +126,16 @@ def cleanup_models(conds, models):
     control_cleanup = []
     for k in conds:
         control_cleanup += get_models_from_cond(conds[k], "control")
+        cleanup_gligen(conds[k])
 
     cleanup_additional_models(set(control_cleanup))
+
+def cleanup_gligen(cond):
+    if 'gligen' in cond:
+        gligen = cond['gligen']
+        gligen_model: Gligen = gligen[1]
+        if gligen_model is not None and hasattr(gligen_model.model, 'cleanup'):
+            gligen_model.model.cleanup()
 
 def prepare_model_patcher(model: ModelPatcher, conds, model_options: dict):
     '''
