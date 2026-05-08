@@ -1,0 +1,249 @@
+name: Cut Release
+
+# Promote a prepared "candidate" branch (cherry-picks + version bump
+# already committed) into a real release: create the canonical
+# `release/v<version>` branch, create the `v<version>` annotated tag, and
+# (on success) delete the candidate branch.
+#
+# After this runs, kick off `release-stable-all.yml` manually with the new
+# tag to build portable artifacts — same as previous backports.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_branch:
+        description: 'Candidate branch with cherry-picks + version bump (e.g. kosinkadink/release-v0.20.3-prep)'
+        required: true
+        type: string
+      version:
+        description: 'Target version (e.g. 0.20.3 — no leading v)'
+        required: true
+        type: string
+      release_branch:
+        description: 'Override target release branch name (default: release/v<version>)'
+        required: false
+        type: string
+        default: ''
+      tag_name:
+        description: 'Override tag name (default: v<version>)'
+        required: false
+        type: string
+        default: ''
+      dry_run:
+        description: 'Validate only — do not push branch, tag, or delete source'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  cut-release:
+    runs-on: ubuntu-latest
+    permissions:
+      # GITHUB_TOKEN write access is unused for the actual push (we use
+      # RELEASE_BOT_TOKEN to bypass branch-protection rules), but kept
+      # write so subsequent automation hooks have it if needed.
+      contents: write
+    env:
+      # All workflow inputs are pulled in via env vars instead of being
+      # interpolated directly into bash, to avoid command injection.
+      INPUT_VERSION: ${{ inputs.version }}
+      INPUT_SOURCE_BRANCH: ${{ inputs.source_branch }}
+      INPUT_RELEASE_BRANCH: ${{ inputs.release_branch }}
+      INPUT_TAG_NAME: ${{ inputs.tag_name }}
+      INPUT_DRY_RUN: ${{ inputs.dry_run }}
+      REPO_FULL: ${{ github.repository }}
+
+    steps:
+      - name: Compute names
+        id: names
+        run: |
+          set -euo pipefail
+          VERSION="${INPUT_VERSION#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid version '$VERSION' — must match X.Y.Z"
+            exit 1
+          fi
+
+          REL_BRANCH="$INPUT_RELEASE_BRANCH"
+          [ -z "$REL_BRANCH" ] && REL_BRANCH="release/v${VERSION}"
+
+          TAG_NAME="$INPUT_TAG_NAME"
+          [ -z "$TAG_NAME" ] && TAG_NAME="v${VERSION}"
+
+          # Validate the overrides too — they're effectively user-controlled
+          # ref names and end up in shell + git invocations.
+          REF_RE='^[A-Za-z0-9._/-]+$'
+          if ! [[ "$REL_BRANCH" =~ $REF_RE ]]; then
+            echo "::error::Invalid release_branch '$REL_BRANCH' — only [A-Za-z0-9._/-] allowed."
+            exit 1
+          fi
+          if ! [[ "$TAG_NAME" =~ $REF_RE ]]; then
+            echo "::error::Invalid tag_name '$TAG_NAME' — only [A-Za-z0-9._/-] allowed."
+            exit 1
+          fi
+          if ! [[ "$INPUT_SOURCE_BRANCH" =~ $REF_RE ]]; then
+            echo "::error::Invalid source_branch '$INPUT_SOURCE_BRANCH' — only [A-Za-z0-9._/-] allowed."
+            exit 1
+          fi
+
+          {
+            echo "version=$VERSION"
+            echo "release_branch=$REL_BRANCH"
+            echo "tag_name=$TAG_NAME"
+          } >> "$GITHUB_OUTPUT"
+          echo "Computed: version=$VERSION, release_branch=$REL_BRANCH, tag_name=$TAG_NAME"
+
+      - name: Pre-flight remote checks
+        env:
+          REL_BRANCH: ${{ steps.names.outputs.release_branch }}
+          TAG_NAME: ${{ steps.names.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          REPO_URL="https://github.com/${REPO_FULL}.git"
+
+          # Source branch must exist.
+          if ! git ls-remote --heads --exit-code "$REPO_URL" "$INPUT_SOURCE_BRANCH" >/dev/null; then
+            echo "::error::Source branch '$INPUT_SOURCE_BRANCH' does not exist on origin."
+            exit 1
+          fi
+
+          # Release branch must NOT exist.
+          if git ls-remote --heads --exit-code "$REPO_URL" "$REL_BRANCH" >/dev/null 2>&1; then
+            echo "::error::Release branch '$REL_BRANCH' already exists on origin. Refusing to overwrite."
+            exit 1
+          fi
+
+          # Tag must NOT exist.
+          if git ls-remote --tags --exit-code "$REPO_URL" "$TAG_NAME" >/dev/null 2>&1; then
+            echo "::error::Tag '$TAG_NAME' already exists on origin. Refusing to overwrite."
+            exit 1
+          fi
+
+      - name: Checkout source branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_branch }}
+          fetch-depth: 0
+
+      - name: Verify version files at source HEAD
+        env:
+          EXPECTED: ${{ steps.names.outputs.version }}
+        run: |
+          set -euo pipefail
+          PYPROJECT_VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          if [ "$PYPROJECT_VERSION" != "$EXPECTED" ]; then
+            echo "::error::pyproject.toml version is '$PYPROJECT_VERSION' but expected '$EXPECTED'."
+            exit 1
+          fi
+          MODULE_VERSION=$(python3 -c "v={}; exec(open('comfyui_version.py').read(),v); print(v['__version__'])")
+          if [ "$MODULE_VERSION" != "$EXPECTED" ]; then
+            echo "::error::comfyui_version.py __version__ is '$MODULE_VERSION' but expected '$EXPECTED'."
+            exit 1
+          fi
+          echo "Version files OK: $EXPECTED"
+
+      - name: Identify previous tag and log commit range
+        id: range
+        env:
+          REL_BRANCH: ${{ steps.names.outputs.release_branch }}
+          TAG_NAME: ${{ steps.names.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          # Find latest tag reachable from this commit (the basis backport
+          # was branched from). Falls back to "" gracefully.
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          SOURCE_SHA=$(git rev-parse HEAD)
+          {
+            echo "prev_tag=$PREV_TAG"
+            echo "source_sha=$SOURCE_SHA"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## Cut Release plan"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Source branch | \`$INPUT_SOURCE_BRANCH\` @ \`${SOURCE_SHA:0:12}\` |"
+            echo "| Target release branch | \`$REL_BRANCH\` |"
+            echo "| Tag | \`$TAG_NAME\` |"
+            echo "| Previous reachable tag | \`${PREV_TAG:-none}\` |"
+            echo "| Dry run | \`$INPUT_DRY_RUN\` |"
+            echo ""
+            echo "### Commits to be tagged"
+            echo ""
+            if [ -n "$PREV_TAG" ]; then
+              echo "Range: \`${PREV_TAG}..${SOURCE_SHA}\`"
+              echo ""
+              echo '```'
+              git log --oneline --no-decorate "${PREV_TAG}..${SOURCE_SHA}"
+              echo '```'
+            else
+              echo "(no prior tag found — listing last 30 commits on source)"
+              echo ""
+              echo '```'
+              git log --oneline --no-decorate -30 "$SOURCE_SHA"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Configure git identity
+        if: inputs.dry_run != true && inputs.dry_run != 'true'
+        run: |
+          set -euo pipefail
+          git config --global user.name  "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Push release branch and tag (atomic)
+        if: inputs.dry_run != true && inputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
+          REL_BRANCH: ${{ steps.names.outputs.release_branch }}
+          TAG_NAME: ${{ steps.names.outputs.tag_name }}
+          VERSION: ${{ steps.names.outputs.version }}
+          SOURCE_SHA: ${{ steps.range.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::secrets.RELEASE_BOT_TOKEN is not set."
+            exit 1
+          fi
+
+          # Create the annotated tag locally first so we can push branch +
+          # tag in a single atomic operation: either both refs are created
+          # on origin, or neither — no half-promoted state.
+          git tag -a "$TAG_NAME" "$SOURCE_SHA" -m "ComfyUI v${VERSION}"
+
+          AUTH_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO_FULL}.git"
+          git push --atomic "$AUTH_URL" \
+            "${SOURCE_SHA}:refs/heads/${REL_BRANCH}" \
+            "refs/tags/${TAG_NAME}"
+
+      - name: Delete source branch (success only)
+        if: success() && inputs.dry_run != true && inputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          AUTH_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO_FULL}.git"
+          git push "$AUTH_URL" --delete "refs/heads/${INPUT_SOURCE_BRANCH}"
+
+      - name: Final summary
+        if: always()
+        env:
+          REL_BRANCH: ${{ steps.names.outputs.release_branch }}
+          TAG_NAME: ${{ steps.names.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          {
+            echo ""
+            echo "### Result"
+            if [ "$INPUT_DRY_RUN" = "true" ]; then
+              echo "🔍 **Dry run** — no branch, tag, or deletion was performed."
+            else
+              echo "✅ Promoted \`$INPUT_SOURCE_BRANCH\` to \`$REL_BRANCH\` and tagged \`$TAG_NAME\`."
+              echo ""
+              echo "- Branch: <https://github.com/${REPO_FULL}/tree/${REL_BRANCH}>"
+              echo "- Tag: <https://github.com/${REPO_FULL}/releases/tag/${TAG_NAME}>"
+              echo ""
+              echo "Next: run [release-stable-all.yml](https://github.com/${REPO_FULL}/actions/workflows/release-stable-all.yml) with \`git_tag=${TAG_NAME}\`."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
