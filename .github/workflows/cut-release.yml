@@ -2,11 +2,14 @@ name: Cut Release
 
 # Promote a prepared "candidate" branch (cherry-picks + version bump
 # already committed) into a real release: create the canonical
-# `release/v<version>` branch, create the `v<version>` annotated tag, and
-# (on success) delete the candidate branch.
+# `release/v<version>` branch and the `v<version>` annotated tag at the
+# candidate's HEAD, atomically.
 #
 # After this runs, kick off `release-stable-all.yml` manually with the new
 # tag to build portable artifacts — same as previous backports.
+#
+# The candidate branch is left in place; clean it up manually once you've
+# verified the release.
 
 on:
   workflow_dispatch:
@@ -30,7 +33,7 @@ on:
         type: string
         default: ''
       dry_run:
-        description: 'Validate only — do not push branch, tag, or delete source'
+        description: 'Validate only — do not push branch or tag'
         required: false
         type: boolean
         default: false
@@ -124,18 +127,38 @@ jobs:
         with:
           ref: ${{ inputs.source_branch }}
           fetch-depth: 0
+          # Defense in depth: don't leave a usable git credential on disk
+          # for any code that runs against the checked-out branch.
+          persist-credentials: false
 
       - name: Verify version files at source HEAD
         env:
           EXPECTED: ${{ steps.names.outputs.version }}
         run: |
           set -euo pipefail
+          # pyproject.toml is parsed with tomllib (safe — pure data, no code).
           PYPROJECT_VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
           if [ "$PYPROJECT_VERSION" != "$EXPECTED" ]; then
             echo "::error::pyproject.toml version is '$PYPROJECT_VERSION' but expected '$EXPECTED'."
             exit 1
           fi
-          MODULE_VERSION=$(python3 -c "v={}; exec(open('comfyui_version.py').read(),v); print(v['__version__'])")
+          # comfyui_version.py contains Python — never `exec()` it. A
+          # malicious candidate branch could replace it with arbitrary code
+          # that would then run in CI with RELEASE_BOT_TOKEN in scope.
+          # Statically parse the AST to extract __version__ instead.
+          MODULE_VERSION=$(python3 - <<'PY'
+          import ast, pathlib, sys
+          tree = ast.parse(pathlib.Path("comfyui_version.py").read_text(encoding="utf-8"))
+          for node in tree.body:
+              if isinstance(node, ast.Assign):
+                  for target in node.targets:
+                      if isinstance(target, ast.Name) and target.id == "__version__":
+                          if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                              print(node.value.value)
+                              sys.exit(0)
+          sys.exit("Could not statically read __version__ from comfyui_version.py")
+          PY
+          )
           if [ "$MODULE_VERSION" != "$EXPECTED" ]; then
             echo "::error::comfyui_version.py __version__ is '$MODULE_VERSION' but expected '$EXPECTED'."
             exit 1
@@ -217,33 +240,29 @@ jobs:
             "${SOURCE_SHA}:refs/heads/${REL_BRANCH}" \
             "refs/tags/${TAG_NAME}"
 
-      - name: Delete source branch (success only)
-        if: success() && inputs.dry_run != true && inputs.dry_run != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
-        run: |
-          set -euo pipefail
-          AUTH_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO_FULL}.git"
-          git push "$AUTH_URL" --delete "refs/heads/${INPUT_SOURCE_BRANCH}"
-
       - name: Final summary
         if: always()
         env:
           REL_BRANCH: ${{ steps.names.outputs.release_branch }}
           TAG_NAME: ${{ steps.names.outputs.tag_name }}
+          JOB_STATUS: ${{ job.status }}
         run: |
           set -euo pipefail
           {
             echo ""
             echo "### Result"
-            if [ "$INPUT_DRY_RUN" = "true" ]; then
-              echo "🔍 **Dry run** — no branch, tag, or deletion was performed."
+            if [ "$JOB_STATUS" != "success" ]; then
+              echo "❌ Workflow did not complete successfully (job status: \`$JOB_STATUS\`). See the run logs for details. No branch or tag should be assumed to have been created."
+            elif [ "$INPUT_DRY_RUN" = "true" ]; then
+              echo "🔍 **Dry run** — no branch or tag was created."
             else
-              echo "✅ Promoted \`$INPUT_SOURCE_BRANCH\` to \`$REL_BRANCH\` and tagged \`$TAG_NAME\`."
+              echo "✅ Created \`$REL_BRANCH\` and tagged \`$TAG_NAME\` from \`$INPUT_SOURCE_BRANCH\`."
               echo ""
               echo "- Branch: <https://github.com/${REPO_FULL}/tree/${REL_BRANCH}>"
               echo "- Tag: <https://github.com/${REPO_FULL}/releases/tag/${TAG_NAME}>"
               echo ""
               echo "Next: run [release-stable-all.yml](https://github.com/${REPO_FULL}/actions/workflows/release-stable-all.yml) with \`git_tag=${TAG_NAME}\`."
+              echo ""
+              echo "The candidate branch \`$INPUT_SOURCE_BRANCH\` was left in place; delete it manually once you've verified the release."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
