@@ -33,11 +33,12 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::error::RELEASE_BOT_TOKEN is not set."
+            echo "::error::GH_TOKEN is not set."
             exit 1
           fi
-          BOT_LOGIN=$(gh api /user --jq .login)
-          echo "Bot identity: $BOT_LOGIN"
+          # `gh api /user` is 403 for github-actions[bot]; the login is fixed.
+          BOT_LOGIN="github-actions[bot]"
+          echo "Bot identity (hardcoded): $BOT_LOGIN"
           {
             echo "## Bot identity"
             echo "- login: \`$BOT_LOGIN\`"
