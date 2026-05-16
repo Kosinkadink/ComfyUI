@@ -1,37 +1,31 @@
 name: Cut Release
 
-# Promote a prepared "candidate" branch (cherry-picks + version bump
-# already committed) into a real release: create the canonical
-# `release/v<version>` branch and the `v<version>` annotated tag at the
-# candidate's HEAD, atomically.
+# Promote a prepared "candidate" backport branch into a real release.
+#
+# Operator workflow:
+#   1. Locally cherry-pick the desired commits onto the previous stable tag
+#      (e.g. v0.20.2). Do NOT include a version-bump commit.
+#   2. Push the candidate branch to origin and open a PR against `master`.
+#   3. Wait for CI to go green; get an APPROVED review from a user listed
+#      in the `STABLE_RELEASE_APPROVERS` repo variable (comma-separated
+#      GitHub logins).
+#   4. Run this workflow with `source_branch` = the candidate branch.
+#
+# This workflow then verifies all gates, computes the next version
+# (previous stable tag + patch+1), creates the version-bump commit on top
+# of the candidate, and pushes `release/v<version>` + `v<version>`
+# atomically using RELEASE_BOT_TOKEN.
 #
 # After this runs, kick off `release-stable-all.yml` manually with the new
-# tag to build portable artifacts — same as previous backports.
-#
-# The candidate branch is left in place; clean it up manually once you've
-# verified the release.
+# tag to build portable artifacts.
 
 on:
   workflow_dispatch:
     inputs:
       source_branch:
-        description: 'Candidate branch with cherry-picks + version bump (e.g. kosinkadink/release-v0.20.3-prep)'
+        description: 'Candidate backport branch on origin (cherry-picks only — NO version bump)'
         required: true
         type: string
-      version:
-        description: 'Target version (e.g. 0.20.3 — no leading v)'
-        required: true
-        type: string
-      release_branch:
-        description: 'Override target release branch name (default: release/v<version>)'
-        required: false
-        type: string
-        default: ''
-      tag_name:
-        description: 'Override tag name (default: v<version>)'
-        required: false
-        type: string
-        default: ''
       dry_run:
         description: 'Validate only — do not push branch or tag'
         required: false
@@ -42,113 +36,155 @@ jobs:
   cut-release:
     runs-on: ubuntu-latest
     permissions:
-      # GITHUB_TOKEN write access is unused for the actual push (we use
-      # RELEASE_BOT_TOKEN to bypass branch-protection rules), but kept
-      # write so subsequent automation hooks have it if needed.
-      contents: write
+      # GITHUB_TOKEN is used only for read-only API calls (PR / review /
+      # check lookups). The actual ref creation uses RELEASE_BOT_TOKEN to
+      # bypass branch-protection rules on `release/*` and `v*`.
+      contents: read
+      pull-requests: read
+      checks: read
     env:
       # All workflow inputs are pulled in via env vars instead of being
       # interpolated directly into bash, to avoid command injection.
-      INPUT_VERSION: ${{ inputs.version }}
       INPUT_SOURCE_BRANCH: ${{ inputs.source_branch }}
-      INPUT_RELEASE_BRANCH: ${{ inputs.release_branch }}
-      INPUT_TAG_NAME: ${{ inputs.tag_name }}
       INPUT_DRY_RUN: ${{ inputs.dry_run }}
       REPO_FULL: ${{ github.repository }}
+      APPROVERS: ${{ vars.STABLE_RELEASE_APPROVERS }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
-      - name: Compute names
-        id: names
+      - name: Validate inputs and config
         run: |
           set -euo pipefail
-          VERSION="${INPUT_VERSION#v}"
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Invalid version '$VERSION' — must match X.Y.Z"
-            exit 1
-          fi
-
-          REL_BRANCH="$INPUT_RELEASE_BRANCH"
-          [ -z "$REL_BRANCH" ] && REL_BRANCH="release/v${VERSION}"
-
-          TAG_NAME="$INPUT_TAG_NAME"
-          [ -z "$TAG_NAME" ] && TAG_NAME="v${VERSION}"
-
-          # Validate the overrides too — they're effectively user-controlled
-          # ref names and end up in shell + git invocations.
           REF_RE='^[A-Za-z0-9._/-]+$'
-          if ! [[ "$REL_BRANCH" =~ $REF_RE ]]; then
-            echo "::error::Invalid release_branch '$REL_BRANCH' — only [A-Za-z0-9._/-] allowed."
-            exit 1
-          fi
-          if ! [[ "$TAG_NAME" =~ $REF_RE ]]; then
-            echo "::error::Invalid tag_name '$TAG_NAME' — only [A-Za-z0-9._/-] allowed."
-            exit 1
-          fi
           if ! [[ "$INPUT_SOURCE_BRANCH" =~ $REF_RE ]]; then
             echo "::error::Invalid source_branch '$INPUT_SOURCE_BRANCH' — only [A-Za-z0-9._/-] allowed."
             exit 1
           fi
-
-          {
-            echo "version=$VERSION"
-            echo "release_branch=$REL_BRANCH"
-            echo "tag_name=$TAG_NAME"
-          } >> "$GITHUB_OUTPUT"
-          echo "Computed: version=$VERSION, release_branch=$REL_BRANCH, tag_name=$TAG_NAME"
-
-      - name: Pre-flight remote checks
-        env:
-          REL_BRANCH: ${{ steps.names.outputs.release_branch }}
-          TAG_NAME: ${{ steps.names.outputs.tag_name }}
-        run: |
-          set -euo pipefail
-          REPO_URL="https://github.com/${REPO_FULL}.git"
-
-          # Source branch must exist.
-          if ! git ls-remote --heads --exit-code "$REPO_URL" "$INPUT_SOURCE_BRANCH" >/dev/null; then
-            echo "::error::Source branch '$INPUT_SOURCE_BRANCH' does not exist on origin."
+          if [ -z "${APPROVERS:-}" ]; then
+            echo "::error::Repository variable STABLE_RELEASE_APPROVERS is not set. Configure it as a comma-separated list of GitHub logins permitted to approve stable backport releases."
             exit 1
           fi
 
-          # Release branch must NOT exist.
-          if git ls-remote --heads --exit-code "$REPO_URL" "$REL_BRANCH" >/dev/null 2>&1; then
-            echo "::error::Release branch '$REL_BRANCH' already exists on origin. Refusing to overwrite."
-            exit 1
-          fi
-
-          # Tag must NOT exist.
-          if git ls-remote --tags --exit-code "$REPO_URL" "$TAG_NAME" >/dev/null 2>&1; then
-            echo "::error::Tag '$TAG_NAME' already exists on origin. Refusing to overwrite."
-            exit 1
-          fi
-
-      - name: Checkout source branch
+      - name: Check out master with full history + tags
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_branch }}
+          ref: master
           fetch-depth: 0
           # Defense in depth: don't leave a usable git credential on disk
           # for any code that runs against the checked-out branch.
           persist-credentials: false
 
-      - name: Verify version files at source HEAD
-        env:
-          EXPECTED: ${{ steps.names.outputs.version }}
+      - name: Determine latest stable tag and next version
+        id: ver
         run: |
           set -euo pipefail
-          # pyproject.toml is parsed with tomllib (safe — pure data, no code).
-          PYPROJECT_VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          if [ "$PYPROJECT_VERSION" != "$EXPECTED" ]; then
-            echo "::error::pyproject.toml version is '$PYPROJECT_VERSION' but expected '$EXPECTED'."
+          git fetch --tags --force origin
+          # Latest stable tag = highest semver vX.Y.Z (no pre-release suffix).
+          LATEST_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | head -n1)
+          if [ -z "$LATEST_TAG" ]; then
+            echo "::error::Could not determine latest stable vX.Y.Z tag."
+            exit 1
+          fi
+          # Peel annotated tag → commit SHA.
+          LATEST_SHA=$(git rev-list -n1 "$LATEST_TAG")
+          BASE_VERSION="${LATEST_TAG#v}"
+          IFS=. read -r MAJ MIN PATCH <<<"$BASE_VERSION"
+          NEXT_PATCH=$((PATCH + 1))
+          NEXT_VERSION="${MAJ}.${MIN}.${NEXT_PATCH}"
+          NEXT_TAG="v${NEXT_VERSION}"
+          NEXT_BRANCH="release/${NEXT_TAG}"
+          {
+            echo "latest_tag=$LATEST_TAG"
+            echo "latest_sha=$LATEST_SHA"
+            echo "latest_version=$BASE_VERSION"
+            echo "next_version=$NEXT_VERSION"
+            echo "next_tag=$NEXT_TAG"
+            echo "next_branch=$NEXT_BRANCH"
+          } >> "$GITHUB_OUTPUT"
+          echo "Latest stable: $LATEST_TAG ($LATEST_SHA)"
+          echo "Next release : $NEXT_TAG"
+
+      - name: Pre-flight remote checks
+        env:
+          NEXT_BRANCH: ${{ steps.ver.outputs.next_branch }}
+          NEXT_TAG: ${{ steps.ver.outputs.next_tag }}
+        run: |
+          set -euo pipefail
+          REPO_URL="https://github.com/${REPO_FULL}.git"
+          if ! git ls-remote --heads --exit-code "$REPO_URL" "$INPUT_SOURCE_BRANCH" >/dev/null; then
+            echo "::error::Source branch '$INPUT_SOURCE_BRANCH' does not exist on origin."
+            exit 1
+          fi
+          if git ls-remote --heads --exit-code "$REPO_URL" "$NEXT_BRANCH" >/dev/null 2>&1; then
+            echo "::error::Release branch '$NEXT_BRANCH' already exists on origin. Refusing to overwrite."
+            exit 1
+          fi
+          if git ls-remote --tags --exit-code "$REPO_URL" "$NEXT_TAG" >/dev/null 2>&1; then
+            echo "::error::Tag '$NEXT_TAG' already exists on origin. Refusing to overwrite."
+            exit 1
+          fi
+
+      - name: Verify candidate branch is rooted at latest stable tag
+        id: root
+        env:
+          LATEST_SHA: ${{ steps.ver.outputs.latest_sha }}
+          LATEST_TAG: ${{ steps.ver.outputs.latest_tag }}
+        run: |
+          set -euo pipefail
+          git fetch origin "+${INPUT_SOURCE_BRANCH}:refs/remotes/origin/${INPUT_SOURCE_BRANCH}"
+          SOURCE_SHA=$(git rev-parse "refs/remotes/origin/${INPUT_SOURCE_BRANCH}")
+
+          # 1. Latest stable tag must be an ancestor of the candidate.
+          if ! git merge-base --is-ancestor "$LATEST_SHA" "$SOURCE_SHA"; then
+            echo "::error::Latest stable tag $LATEST_TAG is not an ancestor of $INPUT_SOURCE_BRANCH. The candidate branch must be branched from $LATEST_TAG."
+            exit 1
+          fi
+
+          # 2. merge-base(source, master) MUST equal the latest tag commit.
+          # If the operator merged or rebased master into the backport, the
+          # branch will share extra commits with master past the last release
+          # — that's not a clean backport.
+          MB=$(git merge-base "$SOURCE_SHA" "origin/master")
+          if [ "$MB" != "$LATEST_SHA" ]; then
+            echo "::error::Branch $INPUT_SOURCE_BRANCH is not rooted at $LATEST_TAG. merge-base with master is $MB, expected $LATEST_SHA. The candidate must contain only cherry-picked commits on top of $LATEST_TAG."
+            exit 1
+          fi
+
+          # 3. No merge commits in the cherry-pick range — backports must be
+          # linear so the diff being released is auditable in the PR.
+          if [ -n "$(git log --merges --format=%H "${LATEST_SHA}..${SOURCE_SHA}")" ]; then
+            echo "::error::Candidate branch contains merge commits between $LATEST_TAG and HEAD. Backport branches must be linear cherry-picks only."
+            exit 1
+          fi
+
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "Branch is rooted at $LATEST_TAG ✅"
+
+      - name: Verify version files are unchanged on candidate
+        env:
+          LATEST_VERSION: ${{ steps.ver.outputs.latest_version }}
+          SOURCE_SHA: ${{ steps.root.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          # Read version files at the candidate HEAD WITHOUT switching the
+          # worktree, so we don't run any candidate-supplied code.
+          PYPROJECT_RAW=$(git show "${SOURCE_SHA}:pyproject.toml")
+          PYPROJECT_VERSION=$(printf '%s' "$PYPROJECT_RAW" \
+            | python3 -c "import sys,tomllib; print(tomllib.loads(sys.stdin.read())['project']['version'])")
+          if [ "$PYPROJECT_VERSION" != "$LATEST_VERSION" ]; then
+            echo "::error::pyproject.toml version on candidate is '$PYPROJECT_VERSION' but should still be '$LATEST_VERSION' (the previous stable tag). Do not include a version-bump commit on the candidate — this workflow adds it."
             exit 1
           fi
           # comfyui_version.py contains Python — never `exec()` it. A
-          # malicious candidate branch could replace it with arbitrary code
-          # that would then run in CI with RELEASE_BOT_TOKEN in scope.
-          # Statically parse the AST to extract __version__ instead.
-          MODULE_VERSION=$(python3 - <<'PY'
-          import ast, pathlib, sys
-          tree = ast.parse(pathlib.Path("comfyui_version.py").read_text(encoding="utf-8"))
+          # malicious candidate could replace it with arbitrary code that
+          # would then run in CI with RELEASE_BOT_TOKEN in scope. Statically
+          # parse the AST to extract __version__ instead.
+          MODULE_RAW=$(git show "${SOURCE_SHA}:comfyui_version.py")
+          MODULE_VERSION=$(printf '%s' "$MODULE_RAW" | python3 - <<'PY'
+          import ast, sys
+          tree = ast.parse(sys.stdin.read())
           for node in tree.body:
               if isinstance(node, ast.Assign):
                   for target in node.targets:
@@ -159,92 +195,225 @@ jobs:
           sys.exit("Could not statically read __version__ from comfyui_version.py")
           PY
           )
-          if [ "$MODULE_VERSION" != "$EXPECTED" ]; then
-            echo "::error::comfyui_version.py __version__ is '$MODULE_VERSION' but expected '$EXPECTED'."
+          if [ "$MODULE_VERSION" != "$LATEST_VERSION" ]; then
+            echo "::error::comfyui_version.py __version__ on candidate is '$MODULE_VERSION' but should still be '$LATEST_VERSION'. Do not include a version-bump commit on the candidate — this workflow adds it."
             exit 1
           fi
-          echo "Version files OK: $EXPECTED"
+          echo "Version files unchanged on candidate ✅"
 
-      - name: Identify previous tag and log commit range
-        id: range
+      - name: Verify PR exists, is approved by a permitted user, and CI is green
+        id: pr
         env:
-          REL_BRANCH: ${{ steps.names.outputs.release_branch }}
-          TAG_NAME: ${{ steps.names.outputs.tag_name }}
+          SOURCE_SHA: ${{ steps.root.outputs.source_sha }}
         run: |
           set -euo pipefail
-          # Find latest tag reachable from this commit (the basis backport
-          # was branched from). Falls back to "" gracefully.
-          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          SOURCE_SHA=$(git rev-parse HEAD)
+          OWNER="${REPO_FULL%/*}"
+
+          # Locate the open PR with this branch as its head (same-repo only).
+          PR_LIST=$(gh api "repos/${REPO_FULL}/pulls" \
+            -X GET -f state=open -f "head=${OWNER}:${INPUT_SOURCE_BRANCH}" \
+            --jq '[.[] | {number,head_sha:.head.sha,base:.base.ref}]')
+          PR_COUNT=$(echo "$PR_LIST" | jq 'length')
+          if [ "$PR_COUNT" -ne 1 ]; then
+            echo "::error::Expected exactly 1 open PR with head '${INPUT_SOURCE_BRANCH}', found $PR_COUNT."
+            echo "$PR_LIST" | jq .
+            exit 1
+          fi
+          PR_NUMBER=$(echo "$PR_LIST" | jq -r '.[0].number')
+          PR_HEAD_SHA=$(echo "$PR_LIST" | jq -r '.[0].head_sha')
+          PR_BASE=$(echo "$PR_LIST" | jq -r '.[0].base')
+
+          if [ "$PR_BASE" != "master" ]; then
+            echo "::error::PR #${PR_NUMBER} targets '$PR_BASE', expected 'master'."
+            exit 1
+          fi
+          if [ "$PR_HEAD_SHA" != "$SOURCE_SHA" ]; then
+            echo "::error::PR #${PR_NUMBER} HEAD ($PR_HEAD_SHA) does not match candidate branch HEAD ($SOURCE_SHA). The branch may have been updated after the PR was approved — re-trigger after pushing the latest commits."
+            exit 1
+          fi
+
+          # ---- Approval check ----
+          # An approving review must be:
+          #   * from a user in the STABLE_RELEASE_APPROVERS allow-list,
+          #   * state == APPROVED,
+          #   * on the current HEAD (commit_id == PR_HEAD_SHA) — newer
+          #     commits invalidate older approvals.
+          REVIEWS=$(gh api "repos/${REPO_FULL}/pulls/${PR_NUMBER}/reviews" --paginate)
+          APPROVED_BY=""
+          # Normalize allow-list (strip whitespace, lowercase for matching).
+          ALLOW_NORM=$(echo "$APPROVERS" | tr ',' '\n' | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' | grep -v '^$' || true)
+          for login in $ALLOW_NORM; do
+            MATCH=$(echo "$REVIEWS" | jq -r --arg user "$login" --arg sha "$PR_HEAD_SHA" \
+              '[.[] | select((.user.login | ascii_downcase)==$user and .state=="APPROVED" and .commit_id==$sha)] | .[0].user.login // empty')
+            if [ -n "$MATCH" ]; then
+              APPROVED_BY="$MATCH"
+              break
+            fi
+          done
+          if [ -z "$APPROVED_BY" ]; then
+            echo "::error::PR #${PR_NUMBER} has no APPROVED review on commit ${PR_HEAD_SHA:0:12} from a permitted approver. Allowed approvers: ${APPROVERS}."
+            exit 1
+          fi
+
+          # ---- CI check ----
+          # All check-runs on PR_HEAD_SHA must be completed with conclusion
+          # success/neutral/skipped. We do NOT use mergeable_state because
+          # branch protection may require "up-to-date with master", which
+          # backport branches by definition are not (and shouldn't be).
+          CHECKS=$(gh api "repos/${REPO_FULL}/commits/${PR_HEAD_SHA}/check-runs" --paginate \
+            --jq '.check_runs')
+          PENDING=$(echo "$CHECKS" | jq -r '.[] | select(.status!="completed") | .name')
+          FAILED=$(echo "$CHECKS" | jq -r '.[] | select(.status=="completed" and (.conclusion!="success" and .conclusion!="neutral" and .conclusion!="skipped")) | "\(.name) (\(.conclusion))"')
+          TOTAL=$(echo "$CHECKS" | jq 'length')
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "::error::No check-runs found on commit ${PR_HEAD_SHA:0:12}. CI must run before promoting a release."
+            exit 1
+          fi
+          if [ -n "$PENDING" ]; then
+            echo "::error::PR #${PR_NUMBER} has pending check-runs on ${PR_HEAD_SHA:0:12}:"
+            echo "$PENDING" | sed 's/^/  - /'
+            exit 1
+          fi
+          if [ -n "$FAILED" ]; then
+            echo "::error::PR #${PR_NUMBER} has failing check-runs on ${PR_HEAD_SHA:0:12}:"
+            echo "$FAILED" | sed 's/^/  - /'
+            exit 1
+          fi
+
+          # Also reject if any classic commit-status is failing/pending.
+          STATUSES=$(gh api "repos/${REPO_FULL}/commits/${PR_HEAD_SHA}/status" \
+            --jq '{state: .state, contexts: [.statuses[] | {context, state}]}')
+          STATE=$(echo "$STATUSES" | jq -r '.state')
+          if [ "$STATE" != "success" ] && [ "$STATE" != "pending" ]; then
+            # "pending" with zero contexts means "no statuses" (only check-runs) — allow.
+            CTX_COUNT=$(echo "$STATUSES" | jq '.contexts | length')
+            if [ "$STATE" = "pending" ] && [ "$CTX_COUNT" -eq 0 ]; then
+              :
+            else
+              echo "::error::PR #${PR_NUMBER} commit-status rollup is '$STATE' on ${PR_HEAD_SHA:0:12}:"
+              echo "$STATUSES" | jq -r '.contexts[] | "  - \(.context): \(.state)"'
+              exit 1
+            fi
+          elif [ "$STATE" = "pending" ]; then
+            CTX_COUNT=$(echo "$STATUSES" | jq '.contexts | length')
+            if [ "$CTX_COUNT" -gt 0 ]; then
+              echo "::error::PR #${PR_NUMBER} has pending commit-statuses on ${PR_HEAD_SHA:0:12}:"
+              echo "$STATUSES" | jq -r '.contexts[] | select(.state!="success") | "  - \(.context): \(.state)"'
+              exit 1
+            fi
+          fi
+
           {
-            echo "prev_tag=$PREV_TAG"
-            echo "source_sha=$SOURCE_SHA"
+            echo "pr_number=$PR_NUMBER"
+            echo "approved_by=$APPROVED_BY"
           } >> "$GITHUB_OUTPUT"
+          echo "PR #${PR_NUMBER} approved by @${APPROVED_BY}, CI green ($TOTAL checks) ✅"
+
+      - name: Apply version bump on top of candidate
+        id: bump
+        env:
+          NEXT_VERSION: ${{ steps.ver.outputs.next_version }}
+          SOURCE_SHA: ${{ steps.root.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          # Materialize the candidate as a local branch so we can build a
+          # commit on top of it. We do NOT execute anything from the
+          # candidate's content — only edit two files via stdlib parsers.
+          git checkout -B _release_local "$SOURCE_SHA"
+
+          python3 - "$NEXT_VERSION" <<'PY'
+          import pathlib, re, sys
+          version = sys.argv[1]
+          # pyproject.toml — replace only the top-level `version = "..."`
+          # line under [project]. Use a strict, anchored regex.
+          p = pathlib.Path("pyproject.toml")
+          text = p.read_text(encoding="utf-8")
+          new = re.sub(r'(?m)^(version\s*=\s*")([^"]+)(")',
+                       lambda m: m.group(1) + version + m.group(3),
+                       text, count=1)
+          if new == text:
+              sys.exit("Failed to update version in pyproject.toml")
+          p.write_text(new, encoding="utf-8")
+
+          # comfyui_version.py — replace `__version__ = "..."`.
+          p = pathlib.Path("comfyui_version.py")
+          text = p.read_text(encoding="utf-8")
+          new = re.sub(r'__version__\s*=\s*"[^"]+"',
+                       f'__version__ = "{version}"',
+                       text, count=1)
+          if new == text:
+              sys.exit("Failed to update __version__ in comfyui_version.py")
+          p.write_text(new, encoding="utf-8")
+          PY
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml comfyui_version.py
+          git commit -m "Bump version to ${NEXT_VERSION}"
+          BUMP_SHA=$(git rev-parse HEAD)
+          echo "bump_sha=$BUMP_SHA" >> "$GITHUB_OUTPUT"
+          echo "Created bump commit ${BUMP_SHA:0:12}"
+
+      - name: Plan summary
+        env:
+          LATEST_TAG: ${{ steps.ver.outputs.latest_tag }}
+          NEXT_TAG: ${{ steps.ver.outputs.next_tag }}
+          NEXT_BRANCH: ${{ steps.ver.outputs.next_branch }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          APPROVED_BY: ${{ steps.pr.outputs.approved_by }}
+          SOURCE_SHA: ${{ steps.root.outputs.source_sha }}
+          BUMP_SHA: ${{ steps.bump.outputs.bump_sha }}
+        run: |
+          set -euo pipefail
           {
             echo "## Cut Release plan"
             echo ""
             echo "| Field | Value |"
             echo "| --- | --- |"
             echo "| Source branch | \`$INPUT_SOURCE_BRANCH\` @ \`${SOURCE_SHA:0:12}\` |"
-            echo "| Target release branch | \`$REL_BRANCH\` |"
-            echo "| Tag | \`$TAG_NAME\` |"
-            echo "| Previous reachable tag | \`${PREV_TAG:-none}\` |"
+            echo "| Source PR | [#${PR_NUMBER}](https://github.com/${REPO_FULL}/pull/${PR_NUMBER}) |"
+            echo "| Approved by | @${APPROVED_BY} |"
+            echo "| Previous stable tag | \`$LATEST_TAG\` |"
+            echo "| Next tag | \`$NEXT_TAG\` |"
+            echo "| Next branch | \`$NEXT_BRANCH\` |"
+            echo "| Version-bump commit | \`${BUMP_SHA:0:12}\` |"
             echo "| Dry run | \`$INPUT_DRY_RUN\` |"
             echo ""
-            echo "### Commits to be tagged"
+            echo "### Commits to be released (\`${LATEST_TAG}..${BUMP_SHA}\`)"
             echo ""
-            if [ -n "$PREV_TAG" ]; then
-              echo "Range: \`${PREV_TAG}..${SOURCE_SHA}\`"
-              echo ""
-              echo '```'
-              git log --oneline --no-decorate "${PREV_TAG}..${SOURCE_SHA}"
-              echo '```'
-            else
-              echo "(no prior tag found — listing last 30 commits on source)"
-              echo ""
-              echo '```'
-              git log --oneline --no-decorate -30 "$SOURCE_SHA"
-              echo '```'
-            fi
+            echo '```'
+            git log --oneline --no-decorate "${LATEST_TAG}..${BUMP_SHA}"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Configure git identity
-        if: inputs.dry_run != true && inputs.dry_run != 'true'
-        run: |
-          set -euo pipefail
-          git config --global user.name  "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Push release branch and tag (atomic)
         if: inputs.dry_run != true && inputs.dry_run != 'true'
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
-          REL_BRANCH: ${{ steps.names.outputs.release_branch }}
-          TAG_NAME: ${{ steps.names.outputs.tag_name }}
-          VERSION: ${{ steps.names.outputs.version }}
-          SOURCE_SHA: ${{ steps.range.outputs.source_sha }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
+          NEXT_BRANCH: ${{ steps.ver.outputs.next_branch }}
+          NEXT_TAG: ${{ steps.ver.outputs.next_tag }}
+          NEXT_VERSION: ${{ steps.ver.outputs.next_version }}
+          BUMP_SHA: ${{ steps.bump.outputs.bump_sha }}
         run: |
           set -euo pipefail
-          if [ -z "${GH_TOKEN:-}" ]; then
+          if [ -z "${RELEASE_TOKEN:-}" ]; then
             echo "::error::secrets.RELEASE_BOT_TOKEN is not set."
             exit 1
           fi
-
           # Create the annotated tag locally first so we can push branch +
           # tag in a single atomic operation: either both refs are created
           # on origin, or neither — no half-promoted state.
-          git tag -a "$TAG_NAME" "$SOURCE_SHA" -m "ComfyUI v${VERSION}"
-
-          AUTH_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO_FULL}.git"
+          git tag -a "$NEXT_TAG" "$BUMP_SHA" -m "ComfyUI v${NEXT_VERSION}"
+          AUTH_URL="https://x-access-token:${RELEASE_TOKEN}@github.com/${REPO_FULL}.git"
           git push --atomic "$AUTH_URL" \
-            "${SOURCE_SHA}:refs/heads/${REL_BRANCH}" \
-            "refs/tags/${TAG_NAME}"
+            "${BUMP_SHA}:refs/heads/${NEXT_BRANCH}" \
+            "refs/tags/${NEXT_TAG}"
 
       - name: Final summary
         if: always()
         env:
-          REL_BRANCH: ${{ steps.names.outputs.release_branch }}
-          TAG_NAME: ${{ steps.names.outputs.tag_name }}
+          NEXT_BRANCH: ${{ steps.ver.outputs.next_branch }}
+          NEXT_TAG: ${{ steps.ver.outputs.next_tag }}
           JOB_STATUS: ${{ job.status }}
         run: |
           set -euo pipefail
@@ -256,13 +425,11 @@ jobs:
             elif [ "$INPUT_DRY_RUN" = "true" ]; then
               echo "🔍 **Dry run** — no branch or tag was created."
             else
-              echo "✅ Created \`$REL_BRANCH\` and tagged \`$TAG_NAME\` from \`$INPUT_SOURCE_BRANCH\`."
+              echo "✅ Created \`$NEXT_BRANCH\` and tagged \`$NEXT_TAG\` from \`$INPUT_SOURCE_BRANCH\` (with version bump)."
               echo ""
-              echo "- Branch: <https://github.com/${REPO_FULL}/tree/${REL_BRANCH}>"
-              echo "- Tag: <https://github.com/${REPO_FULL}/releases/tag/${TAG_NAME}>"
+              echo "- Branch: <https://github.com/${REPO_FULL}/tree/${NEXT_BRANCH}>"
+              echo "- Tag: <https://github.com/${REPO_FULL}/releases/tag/${NEXT_TAG}>"
               echo ""
-              echo "Next: run [release-stable-all.yml](https://github.com/${REPO_FULL}/actions/workflows/release-stable-all.yml) with \`git_tag=${TAG_NAME}\`."
-              echo ""
-              echo "The candidate branch \`$INPUT_SOURCE_BRANCH\` was left in place; delete it manually once you've verified the release."
+              echo "Next: run [release-stable-all.yml](https://github.com/${REPO_FULL}/actions/workflows/release-stable-all.yml) with \`git_tag=${NEXT_TAG}\`."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
