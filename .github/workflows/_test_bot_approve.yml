@@ -1,0 +1,63 @@
+name: "_TEST_ Bot approve PR"
+
+# TEMPORARY helper for testing cut-release.yml end-to-end on the fork.
+# Uses RELEASE_BOT_TOKEN to:
+#   1. Print the bot's GitHub login (so we know who to add to
+#      STABLE_RELEASE_APPROVERS).
+#   2. Submit an APPROVED review on the given PR as that identity.
+# Delete this file once cut-release testing is done.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to approve on this repo'
+        required: true
+        type: string
+
+jobs:
+  bot-approve:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - name: Identify bot and approve PR
+        env:
+          # Use the workflow's automatic GITHUB_TOKEN — its identity is
+          # `github-actions[bot]`, which is distinct from any user PAT
+          # (RELEASE_BOT_TOKEN turned out to be another Kosinkadink PAT).
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REPO_FULL: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::GH_TOKEN is not set."
+            exit 1
+          fi
+          # `gh api /user` is 403 for github-actions[bot]; the login is fixed.
+          BOT_LOGIN="github-actions[bot]"
+          echo "Bot identity (hardcoded): $BOT_LOGIN"
+          {
+            echo "## Bot identity"
+            echo "- login: \`$BOT_LOGIN\`"
+            echo ""
+            echo "Add this to repo variable \`STABLE_RELEASE_APPROVERS\` if not already present."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Refuse to act if the PR head SHA changed since we expected it
+          # (caller should re-check). We just record what we saw.
+          PR_HEAD=$(gh api "repos/${REPO_FULL}/pulls/${PR_NUMBER}" --jq .head.sha)
+          PR_AUTHOR=$(gh api "repos/${REPO_FULL}/pulls/${PR_NUMBER}" --jq .user.login)
+          echo "PR #${PR_NUMBER} author=${PR_AUTHOR} head=${PR_HEAD}"
+
+          if [ "$PR_AUTHOR" = "$BOT_LOGIN" ]; then
+            echo "::error::Bot identity ($BOT_LOGIN) is the PR author. Self-approval would be rejected by GitHub."
+            exit 1
+          fi
+
+          gh api -X POST "repos/${REPO_FULL}/pulls/${PR_NUMBER}/reviews" \
+            -f event=APPROVE \
+            -f body="Approved by ${BOT_LOGIN} via _test_bot_approve.yml helper (cut-release.yml test)."
+          echo "Approved PR #${PR_NUMBER} as ${BOT_LOGIN} on commit ${PR_HEAD:0:12}."
