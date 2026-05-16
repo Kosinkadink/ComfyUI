@@ -239,22 +239,35 @@ jobs:
           #   * on the current HEAD (commit_id == PR_HEAD_SHA) — newer
           #     commits invalidate older approvals.
           REVIEWS=$(gh api "repos/${REPO_FULL}/pulls/${PR_NUMBER}/reviews" --paginate)
-          # Normalize allow-list (split on comma, strip whitespace per
-          # field, lowercase, drop empties) and pick the first APPROVED
-          # review on the current head SHA from any of those users — all
-          # inside jq so we don't trip over login chars like `[bot]` that
-          # bash globbing/word-splitting would mishandle.
+          # Normalize allow-list and find an APPROVED review on the current
+          # head SHA, all inside jq so we don't trip over login chars like
+          # `[bot]` that bash globbing/word-splitting would mishandle.
+          #
+          # GitHub returns every review submission separately, so a reviewer
+          # who approved and then later submitted CHANGES_REQUESTED or had
+          # their approval dismissed will still have the old APPROVED entry
+          # in the list. To honor the *latest* state, filter to stateful
+          # reviews only (APPROVED / CHANGES_REQUESTED / DISMISSED — plain
+          # COMMENTED replies don't override an approval, matching GitHub's
+          # own behavior), group by reviewer, take each reviewer's last
+          # stateful submission, then accept if it's APPROVED.
           APPROVED_BY=$(echo "$REVIEWS" | jq -r --arg list "$APPROVERS" --arg sha "$PR_HEAD_SHA" '
             ($list
               | split(",")
               | map(gsub("\\s"; "") | ascii_downcase)
               | map(select(length > 0))
             ) as $allow
-            | [ .[] | select(
-                  .state == "APPROVED"
-                  and .commit_id == $sha
-                  and (.user.login | ascii_downcase | IN($allow[]))
-              ) ] | .[0].user.login // ""
+            | [ .[]
+                | select(.commit_id == $sha)
+                | select(.user.login | ascii_downcase | IN($allow[]))
+                | select(.state == "APPROVED"
+                         or .state == "CHANGES_REQUESTED"
+                         or .state == "DISMISSED")
+              ]
+            | group_by(.user.login | ascii_downcase)
+            | map(sort_by(.submitted_at, .id) | last)
+            | map(select(.state == "APPROVED"))
+            | .[0].user.login // ""
           ')
           if [ -z "$APPROVED_BY" ]; then
             echo "::error::PR #${PR_NUMBER} has no APPROVED review on commit ${PR_HEAD_SHA:0:12} from a permitted approver. Allowed approvers: ${APPROVERS}."
@@ -434,7 +447,9 @@ jobs:
               echo "✅ Created \`$NEXT_BRANCH\` and tagged \`$NEXT_TAG\` from \`$INPUT_SOURCE_BRANCH\` (with version bump)."
               echo ""
               echo "- Branch: <https://github.com/${REPO_FULL}/tree/${NEXT_BRANCH}>"
-              echo "- Tag: <https://github.com/${REPO_FULL}/releases/tag/${NEXT_TAG}>"
+              # /releases/tag/ would 404 — this workflow creates an annotated
+              # git tag, not a GitHub Release object.
+              echo "- Tag: <https://github.com/${REPO_FULL}/tree/${NEXT_TAG}>"
               echo ""
               echo "Next: run [release-stable-all.yml](https://github.com/${REPO_FULL}/actions/workflows/release-stable-all.yml) with \`git_tag=${NEXT_TAG}\`."
             fi
