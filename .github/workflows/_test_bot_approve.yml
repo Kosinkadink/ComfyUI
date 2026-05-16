@@ -18,10 +18,16 @@ on:
 jobs:
   bot-approve:
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
     steps:
       - name: Identify bot and approve PR
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}
+          # Use the workflow's automatic GITHUB_TOKEN — its identity is
+          # `github-actions[bot]`, which is distinct from any user PAT
+          # (RELEASE_BOT_TOKEN turned out to be another Kosinkadink PAT).
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ inputs.pr_number }}
           REPO_FULL: ${{ github.repository }}
         run: |
