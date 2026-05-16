@@ -181,8 +181,9 @@ jobs:
           # malicious candidate could replace it with arbitrary code that
           # would then run in CI with RELEASE_BOT_TOKEN in scope. Statically
           # parse the AST to extract __version__ instead.
-          MODULE_RAW=$(git show "${SOURCE_SHA}:comfyui_version.py")
-          MODULE_VERSION=$(printf '%s' "$MODULE_RAW" | python3 - <<'PY'
+          # Note: piping into `python3 -c '...'` (NOT `python3 - <<EOF`,
+          # which would redirect stdin to the heredoc itself).
+          MODULE_VERSION=$(git show "${SOURCE_SHA}:comfyui_version.py" | python3 -c '
           import ast, sys
           tree = ast.parse(sys.stdin.read())
           for node in tree.body:
@@ -193,8 +194,7 @@ jobs:
                               print(node.value.value)
                               sys.exit(0)
           sys.exit("Could not statically read __version__ from comfyui_version.py")
-          PY
-          )
+          ')
           if [ "$MODULE_VERSION" != "$LATEST_VERSION" ]; then
             echo "::error::comfyui_version.py __version__ on candidate is '$MODULE_VERSION' but should still be '$LATEST_VERSION'. Do not include a version-bump commit on the candidate — this workflow adds it."
             exit 1
