@@ -239,17 +239,23 @@ jobs:
           #   * on the current HEAD (commit_id == PR_HEAD_SHA) — newer
           #     commits invalidate older approvals.
           REVIEWS=$(gh api "repos/${REPO_FULL}/pulls/${PR_NUMBER}/reviews" --paginate)
-          APPROVED_BY=""
-          # Normalize allow-list (strip whitespace, lowercase for matching).
-          ALLOW_NORM=$(echo "$APPROVERS" | tr ',' '\n' | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' | grep -v '^$' || true)
-          for login in $ALLOW_NORM; do
-            MATCH=$(echo "$REVIEWS" | jq -r --arg user "$login" --arg sha "$PR_HEAD_SHA" \
-              '[.[] | select((.user.login | ascii_downcase)==$user and .state=="APPROVED" and .commit_id==$sha)] | .[0].user.login // empty')
-            if [ -n "$MATCH" ]; then
-              APPROVED_BY="$MATCH"
-              break
-            fi
-          done
+          # Normalize allow-list (split on comma, strip whitespace per
+          # field, lowercase, drop empties) and pick the first APPROVED
+          # review on the current head SHA from any of those users — all
+          # inside jq so we don't trip over login chars like `[bot]` that
+          # bash globbing/word-splitting would mishandle.
+          APPROVED_BY=$(echo "$REVIEWS" | jq -r --arg list "$APPROVERS" --arg sha "$PR_HEAD_SHA" '
+            ($list
+              | split(",")
+              | map(gsub("\\s"; "") | ascii_downcase)
+              | map(select(length > 0))
+            ) as $allow
+            | [ .[] | select(
+                  .state == "APPROVED"
+                  and .commit_id == $sha
+                  and (.user.login | ascii_downcase | IN($allow[]))
+              ) ] | .[0].user.login // ""
+          ')
           if [ -z "$APPROVED_BY" ]; then
             echo "::error::PR #${PR_NUMBER} has no APPROVED review on commit ${PR_HEAD_SHA:0:12} from a permitted approver. Allowed approvers: ${APPROVERS}."
             exit 1
